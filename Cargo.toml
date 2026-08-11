@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+
+[workspace.dependencies]
+wezat-core = { path = "wezat-core" }
+wezat-macros = { path = "wezat-macros" }
+
+
+[package]
+name = "wezat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wezat-core = { workspace = true }
+wezat-macros = { workspace = true }
