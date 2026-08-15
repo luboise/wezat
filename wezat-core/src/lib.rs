@@ -47,18 +47,23 @@ impl_wezat_primitive!(i8);
 impl_wezat_primitive!(i16);
 impl_wezat_primitive!(i32);
 impl_wezat_primitive!(i64);
+impl_wezat_primitive!(f32);
+impl_wezat_primitive!(f64);
 
-/*
-impl<T: Wezat, const C: usize> Wezat for [T; C] {
+impl<T: Wezat + Default + Copy, const C: usize> Wezat for [T; C] {
     const MIN_SIZE: usize = T::MIN_SIZE * C;
 
     fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error> {
-        let mut buf = [0u8; Self::MIN_SIZE];
-        reader.read_exact(&mut buf)?;
+        let mut ret = [T::default(); C];
+
+        for elem in ret.iter_mut().take(C) {
+            *elem = T::from_bytes(reader)?;
+        }
+
+        Ok(ret)
     }
 
     fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
         todo!()
     }
 }
-*/

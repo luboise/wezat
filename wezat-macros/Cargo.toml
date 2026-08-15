@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 quote = "1.0.47"
-syn = "3.0.3"
+syn = { version = "3.0.3", features = ["extra-traits"] }
 syn-path = "3.0.0"
 wezat-core = { version = "0.1.0", path = "../wezat-core" }
 
