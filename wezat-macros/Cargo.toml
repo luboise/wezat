@@ -9,5 +9,9 @@ syn = { version = "3.0.3", features = ["extra-traits"] }
 syn-path = "3.0.0"
 wezat-core = { version = "0.1.0", path = "../wezat-core" }
 
+[features]
+default = ["binrw"]
+binrw = []
+
 [lib]
 proc-macro = true

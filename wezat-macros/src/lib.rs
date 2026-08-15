@@ -73,7 +73,7 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     dependencies.push(Dependency { field, depends_on });
                 }
 
-                fields_to_remove.push(field.ident.clone());
+                fields_to_remove.push(Some(type_segment.clone()));
 
                 let elem = &array.elem;
 
@@ -106,8 +106,6 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 if !struct_is_using_variable_name {
                     panic!("struct not using {type_segment}");
                 }
-
-                // panic!("{type_reference:#?}");
 
                 {
                     let depends_on = field.ident.as_ref().unwrap().to_string();
@@ -175,6 +173,29 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let struct_name = input.ident.clone();
 
+    #[cfg(feature = "binrw")]
+    let binrw_impl = quote::quote! {
+        impl ::binrw::BinRead for #struct_name {
+            type Args<'a> = ();
+
+            fn read_options<R: std::io::Read + std::io::Seek>(
+                reader: &mut R,
+                endian: binrw::Endian,
+                args: Self::Args<'_>,
+            ) -> ::binrw::BinResult<Self> {
+                use ::wezat::Wezat;
+
+                Self::from_bytes(reader).map_err(|e| binrw::Error::Custom {
+                    pos: 0,
+                    err: Box::new(e.to_string()),
+                })
+            }
+        }
+    };
+
+    #[cfg(not(feature = "binrw"))]
+    let binrw_impl = quote::quote! {};
+
     let quoted = quote::quote! {
         #input
         impl ::wezat::Wezat for #struct_name {
@@ -196,6 +217,8 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 todo!()
             }
         }
+
+        #binrw_impl
     };
 
     quoted.into()

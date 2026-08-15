@@ -5,11 +5,14 @@ resolver = "3"
 wezat-core = { path = "wezat-core" }
 wezat-macros = { path = "wezat-macros" }
 
-
 [package]
 name = "wezat"
 version = "0.1.0"
 edition = "2024"
+
+[features]
+default = ["binrw"]
+binrw = ["wezat-macros/binrw"]
 
 [dependencies]
 wezat-core = { workspace = true }
