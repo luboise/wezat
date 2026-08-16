@@ -6,6 +6,38 @@ struct Dependency {
     pub depends_on: String,
 }
 
+#[derive(Debug)]
+enum Field {
+    Normal {
+        name: String,
+    },
+    Pointer {
+        name: String,
+        to_field: String,
+    },
+    Length {
+        name: String,
+        len: usize,
+        for_field: String,
+    },
+}
+
+impl Field {
+    pub fn name(&self) -> &str {
+        match self {
+            Field::Normal { name } | Field::Pointer { name, .. } | Field::Length { name, .. } => {
+                name.as_str()
+            }
+        }
+    }
+}
+
+struct WrittenField {
+    name: String,
+    offset: usize,
+    write_size: usize,
+}
+
 #[proc_macro_attribute]
 pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -13,52 +45,153 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
         panic!("not a struct");
     };
 
-    let syn::Fields::Named(fields) = &mut data.fields else {
+    // go through identifiers in struct and get dependencies
+    let (parsed_fields, dependencies) = parse_fields(data).unwrap();
+
+    let syn::Fields::Named(syn_fields) = &mut data.fields else {
         panic!("expected named fields")
     };
 
-    let original_named_fields = fields.named.iter().cloned().collect::<Vec<_>>();
+    for Dependency { field, depends_on } in dependencies {
+        let field_index = parsed_fields
+            .iter()
+            .position(|f| f.name() == field)
+            .unwrap_or_else(|| panic!(r#"field "{field}" does not exist"#));
 
+        let dep_index = parsed_fields
+            .iter()
+            .position(|f| f.name() == depends_on)
+            .unwrap_or_else(|| panic!(r#"field "{depends_on}" does not exist"#));
+
+        if dep_index == field_index {
+            panic!(r#"wezat error: field "{field}", depends on itself?"#);
+        } else if field_index < dep_index {
+            panic!(r#"`{field}` depends on `{depends_on}`, but `{field}` appears first."#);
+        }
+    }
+
+    syn_fields.named = syn_fields
+        .named
+        .iter()
+        .filter(|syn_field| {
+            let Some(ident) = syn_field.ident.as_ref().map(|v| v.to_string()) else {
+                return false;
+            };
+
+            parsed_fields.iter().any(|parsed_field| {
+                if let Field::Normal { name } = &parsed_field {
+                    *name == ident
+                } else {
+                    false
+                }
+            })
+        })
+        .cloned()
+        .collect();
+
+    let field_idents = syn_fields
+        .named
+        .iter()
+        .filter_map(|v| v.ident.clone())
+        .collect::<Vec<_>>();
+
+    let struct_name = input.ident.clone();
+
+    let binrw_impl = if cfg!(feature = "binrw") {
+        quote::quote! {
+            impl ::binrw::BinRead for #struct_name {
+                type Args<'a> = ();
+
+                fn read_options<R: std::io::Read + std::io::Seek>(
+                    reader: &mut R,
+                    endian: binrw::Endian,
+                    args: Self::Args<'_>,
+                ) -> ::binrw::BinResult<Self> {
+                    use wezat::Wezat;
+
+                    Self::from_bytes(reader).map_err(|e| binrw::Error::Custom {
+                        pos: 0,
+                        err: Box::new(e.to_string()),
+                    })
+                }
+            }
+        }
+    } else {
+        quote::quote! {}
+    };
+
+    let quoted = quote::quote! {
+        #input
+        impl wezat::Wezat for #struct_name {
+            const MIN_SIZE: usize = 0;
+
+            fn from_bytes(reader: &mut impl wezat::Reader) -> Result<Self, wezat::Error> {
+                #(
+                    let #field_idents = wezat::Wezat::from_bytes(reader)?;
+                )*
+
+                Ok(Self {
+                    #(
+                        #field_idents,
+                    )*
+                })
+            }
+
+            fn write_bytes(&self, writer: &mut impl wezat::Writer) -> Result<(), wezat::Error> {
+                #(
+                    self.#field_idents.write_bytes(writer)?;
+                )*
+                Ok(())
+            }
+        }
+
+        #binrw_impl
+    };
+
+    quoted.into()
+}
+
+fn parse_fields(
+    s: &mut syn::DataStruct,
+) -> Result<(Vec<Field>, Vec<Dependency>), Box<dyn std::error::Error>> {
+    let syn::Fields::Named(syn_fields) = &mut s.fields else {
+        panic!("expected named fields")
+    };
+
+    let mut fields = vec![];
     let mut dependencies = vec![];
 
-    let mut fields_to_remove = vec![];
+    let syn_idents = syn_fields
+        .named
+        .iter()
+        .filter_map(|v| v.ident.clone())
+        .collect::<Vec<_>>();
 
-    for field in fields.named.iter_mut() {
+    for field in syn_fields.named.iter_mut() {
+        let Some(ident_str) = field.ident.as_ref().map(|v| v.to_string()) else {
+            continue;
+        };
+
         match &mut field.ty {
             syn::Type::Array(array) => {
                 // make sure len is a path
                 let syn::Expr::Path(expr_path) = array.len.clone() else {
+                    fields.push(Field::Normal { name: ident_str });
                     continue;
-                    /*
-                    panic!(
-                        r#"len of "{}" len is not a path (len: {len:#?})"#,
-                        field
-                            .ident
-                            .as_ref()
-                            .map(|v| v.to_string())
-                            .unwrap_or("error".into()),
-                        len = array.len
-                    );
-                    */
                 };
 
                 let segments = expr_path.path.segments;
 
                 // more than one segment => not a field name
                 if segments.len() != 1 {
+                    fields.push(Field::Normal { name: ident_str });
                     continue;
                 }
 
                 let type_segment = &segments.first().unwrap().ident;
 
-                let struct_is_using_variable_name = original_named_fields
+                let struct_is_using_variable_name = syn_idents
                     .iter()
-                    .filter_map(|original_field| {
-                        let Some(ident) = &original_field.ident else {
-                            return None;
-                        };
-                        Some(ident)
-                    })
                     .any(|original_ident| original_ident == type_segment);
 
                 // if it's not a known field in the struct, ignore it
@@ -73,34 +206,31 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     dependencies.push(Dependency { field, depends_on });
                 }
 
-                fields_to_remove.push(Some(type_segment.clone()));
-
                 let elem = &array.elem;
 
                 field.ty = syn::parse_quote! {
                     ::std::vec::Vec<#elem>
                 };
+
+                fields.push(Field::Normal { name: ident_str });
+                continue;
             }
             syn::Type::Reference(type_reference) => {
                 let syn::Type::Path(path) = type_reference.elem.as_ref() else {
+                    fields.push(Field::Normal { name: ident_str });
                     continue;
                 };
 
                 let type_segment = {
                     if path.path.segments.len() != 1 {
+                        fields.push(Field::Normal { name: ident_str });
                         continue;
                     }
                     path.path.segments.first().unwrap().ident.clone()
                 };
 
                 let struct_is_using_variable_name =
-                    original_named_fields.iter().any(|original_field| {
-                        let Some(original_ident) = &original_field.ident else {
-                            return false;
-                        };
-
-                        *original_ident == type_segment
-                    });
+                    syn_idents.iter().any(|ident| ident == &type_segment);
 
                 // if it's not a known field in the struct, ignore it
                 if !struct_is_using_variable_name {
@@ -108,118 +238,29 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 }
 
                 {
-                    let depends_on = field.ident.as_ref().unwrap().to_string();
                     let field = type_segment.to_string();
-                    dependencies.push(Dependency { field, depends_on });
-                }
 
-                fields_to_remove.push(field.ident.clone());
+                    fields.push(Field::Pointer {
+                        name: ident_str.clone(),
+                        to_field: field.clone(),
+                    });
+
+                    dependencies.push(Dependency {
+                        field,
+                        depends_on: ident_str,
+                    });
+                }
 
                 let elem = &type_reference.elem;
                 field.ty = syn::parse_quote! {
                     ::std::vec::Vec<#elem>
                 };
             }
-            _ => {}
+            _ => {
+                fields.push(Field::Normal { name: ident_str });
+            }
         }
     }
 
-    // go through identifiers in struct and get dependencies
-    let filtered_named_fields = {
-        let mut filtered = vec![];
-
-        for named_field in &fields.named {
-            // skip unidentifiable fields
-            let Some(ident) = &named_field.ident else {
-                continue;
-            };
-
-            if fields_to_remove.iter().any(|v| Some(ident) == v.as_ref()) {
-                continue;
-            }
-
-            filtered.push(named_field.clone());
-        }
-        filtered.into_iter().collect()
-    };
-
-    for Dependency { field, depends_on } in dependencies {
-        let field_index = fields
-            .named
-            .iter()
-            .position(|v| Some(field.clone()) == v.ident.as_ref().map(|v| v.to_string()))
-            .unwrap_or_else(|| panic!(r#"field "{field}" does not exist"#));
-
-        let dep_index = fields
-            .named
-            .iter()
-            .position(|v| Some(depends_on.clone()) == v.ident.as_ref().map(|v| v.to_string()))
-            .unwrap_or_else(|| panic!(r#"field "{depends_on}" does not exist"#));
-
-        if dep_index == field_index {
-            panic!(r#"wezat error: field "{field}", depends on itself?"#);
-        } else if field_index < dep_index {
-            panic!(r#"`{field}` depends on `{depends_on}`, but `{field}` appears first."#);
-        }
-    }
-
-    fields.named = filtered_named_fields;
-
-    let field_idents = fields
-        .named
-        .iter()
-        .filter_map(|v| v.ident.clone())
-        .collect::<Vec<_>>();
-
-    let struct_name = input.ident.clone();
-
-    #[cfg(feature = "binrw")]
-    let binrw_impl = quote::quote! {
-        impl ::binrw::BinRead for #struct_name {
-            type Args<'a> = ();
-
-            fn read_options<R: std::io::Read + std::io::Seek>(
-                reader: &mut R,
-                endian: binrw::Endian,
-                args: Self::Args<'_>,
-            ) -> ::binrw::BinResult<Self> {
-                use ::wezat::Wezat;
-
-                Self::from_bytes(reader).map_err(|e| binrw::Error::Custom {
-                    pos: 0,
-                    err: Box::new(e.to_string()),
-                })
-            }
-        }
-    };
-
-    #[cfg(not(feature = "binrw"))]
-    let binrw_impl = quote::quote! {};
-
-    let quoted = quote::quote! {
-        #input
-        impl ::wezat::Wezat for #struct_name {
-            const MIN_SIZE: usize = 0;
-
-            fn from_bytes(reader: &mut impl ::wezat::Reader) -> Result<Self, ::wezat::Error> {
-                #(
-                    let #field_idents = ::wezat::Wezat::from_bytes(reader)?;
-                )*
-
-                Ok(Self {
-                    #(
-                        #field_idents,
-                    )*
-                })
-            }
-
-            fn write_bytes(&self, writer: &mut impl ::wezat::Writer) -> Result<(), ::wezat::Error> {
-                todo!()
-            }
-        }
-
-        #binrw_impl
-    };
-
-    quoted.into()
+    Ok((fields, dependencies))
 }

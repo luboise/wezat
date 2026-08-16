@@ -10,7 +10,7 @@ syn-path = "3.0.0"
 wezat-core = { version = "0.1.0", path = "../wezat-core" }
 
 [features]
-default = ["binrw"]
+default = []
 binrw = []
 
 [lib]
