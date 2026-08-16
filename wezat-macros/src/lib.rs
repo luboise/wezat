@@ -8,26 +8,17 @@ struct Dependency {
 
 #[derive(Debug)]
 enum Field {
-    Normal {
-        name: String,
-    },
-    Pointer {
-        name: String,
-        to_field: String,
-    },
-    Length {
-        name: String,
-        len: usize,
-        for_field: String,
-    },
+    Normal { name: String, ty: Box<syn::Type> },
+    Pointer { name: String, to_field: String },
+    Length { name: String, for_field: String },
 }
 
 impl Field {
     pub fn name(&self) -> &str {
         match self {
-            Field::Normal { name } | Field::Pointer { name, .. } | Field::Length { name, .. } => {
-                name.as_str()
-            }
+            Field::Normal { name, ty: _ }
+            | Field::Pointer { name, .. }
+            | Field::Length { name, .. } => name.as_str(),
         }
     }
 }
@@ -73,7 +64,7 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
             };
 
             parsed_fields.iter().any(|parsed_field| {
-                if let Field::Normal { name } = &parsed_field {
+                if let Field::Normal { name, ty: _ } = &parsed_field {
                     *name == ident
                 } else {
                     false
@@ -114,11 +105,22 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
         quote::quote! {}
     };
 
+    let type_is_vec = |ty: &syn::Type| -> bool {
+        let syn::Type::Path(syn::TypePath { path, .. }) = ty else {
+            return false;
+        };
+        path.segments.last().is_some_and(|v| v.ident == "Vec")
+    };
+
     let read_actions = {
         let mut actions = vec![];
 
+        // TODO: Merge pointers and lengths and use a struct from wezat instead?
         actions.push(quote::quote! {
+            use wezat::Wezat;
+
             let mut pointers = ::std::collections::HashMap::<String, u32>::new();
+            let mut lengths = ::std::collections::HashMap::<String, usize>::new();
             let _restore_pos = reader.stream_position()?;
         });
 
@@ -127,23 +129,39 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
             let field_name_ident = quote::format_ident!("{}", field_name);
 
             match field {
-                Field::Normal { name } => {
-                    actions.push(quote::quote! {
-                        let #field_name_ident = {
-                            // pointer is available
-                            if let Some(ptr) = pointers.get(#name).cloned() {
-                                let _restore_pos = reader.stream_position()?;
-                                reader.seek(std::io::SeekFrom::Start(ptr.into()))?;
-                                let value = Wezat::from_bytes(reader)?;
-                                reader.seek(std::io::SeekFrom::Start(_restore_pos))?;
+                Field::Normal { name, ty } => {
+                    let action = if type_is_vec(ty) {
+                        quote::quote! {
+                            let #field_name_ident = {
+                                let Some(len) = lengths.get(#name).cloned() else {
+                                    return Err(format!("internal wezat error: no length for field {}", #name).into());
+                                };
 
-                                value
-                            }
-                            else {
-                                Wezat::from_bytes(reader)?
-                            }
-                        };
-                    });
+                                (0..len)
+                                    .map(|_| Wezat::from_bytes(reader))
+                                    .collect::<Result<Vec<_>, _>>()?
+                            };
+                        }
+                    } else {
+                        quote::quote! {
+                            let #field_name_ident = {
+                                // pointer is available
+                                if let Some(ptr) = pointers.get(#name).cloned() {
+                                    let _restore_pos = reader.stream_position()?;
+                                    reader.seek(std::io::SeekFrom::Start(ptr.into()))?;
+                                    let value = Wezat::from_bytes(reader)?;
+                                    reader.seek(std::io::SeekFrom::Start(_restore_pos))?;
+
+                                    value
+                                }
+                                else {
+                                    Wezat::from_bytes(reader)?
+                                }
+                            };
+                        }
+                    };
+
+                    actions.push(action);
                 }
                 Field::Pointer { name: _, to_field } => {
                     actions.push(quote::quote! {
@@ -153,11 +171,14 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                         }
                     });
                 }
-                Field::Length {
-                    name,
-                    len,
-                    for_field,
-                } => todo!(),
+                Field::Length { name: _, for_field } => {
+                    actions.push(quote::quote! {
+                        {
+                            let len: u32 = wezat::Wezat::from_bytes(reader)?;
+                            lengths.insert(#for_field.to_owned(), len as usize);
+                        }
+                    });
+                }
             }
         }
 
@@ -168,6 +189,8 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
         let mut actions = vec![];
 
         actions.push(quote::quote! {
+            use wezat::Wezat;
+
             type PointerType = u32;
             let mut pointers = ::std::collections::HashMap::<String, (u64, Option<String>)>::new();
             let _base_ptr = writer.stream_position()?;
@@ -178,11 +201,22 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
             let ident = quote::format_ident!("{}", field.name());
 
             match field {
-                Field::Normal { name } => {
+                Field::Normal { name, ty } => {
                     actions.push(quote::quote! {
                         pointers.insert(#name.to_owned(), (writer.stream_position()?, None));
-                        Wezat::write_bytes(&self.#ident, writer)?;
                     });
+
+                    if type_is_vec(ty) {
+                        actions.push(quote::quote! {
+                            for item in &self.#ident {
+                                Wezat::write_bytes(item, writer)?;
+                            }
+                        });
+                    } else {
+                        actions.push(quote::quote! {
+                            Wezat::write_bytes(&self.#ident, writer)?;
+                        });
+                    }
                 }
                 Field::Pointer { name, to_field } => {
                     // skip pointers on first pass, but note where they are
@@ -191,11 +225,17 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                         writer.seek_relative(size_of::<PointerType>() as i64)?;
                     });
                 }
-                Field::Length {
-                    name,
-                    len,
-                    for_field,
-                } => todo!(),
+                Field::Length { name, for_field } => {
+                    let for_ident = quote::format_ident!("{for_field}");
+
+                    actions.push(quote::quote! {
+                        {
+                            pointers.insert(#name.to_owned(), (writer.stream_position()?, None));
+                            let len = self.#for_ident.len() as PointerType;
+                            Wezat::write_bytes(&len, writer)?;
+                        }
+                    });
+                }
             }
         }
 
@@ -280,7 +320,10 @@ fn parse_fields(
             syn::Type::Array(array) => {
                 // make sure len is a path
                 let syn::Expr::Path(expr_path) = array.len.clone() else {
-                    fields.push(Field::Normal { name: ident_str });
+                    fields.push(Field::Normal {
+                        name: ident_str,
+                        ty: field.ty.clone().into(),
+                    });
                     continue;
                 };
 
@@ -288,7 +331,10 @@ fn parse_fields(
 
                 // more than one segment => not a field name
                 if segments.len() != 1 {
-                    fields.push(Field::Normal { name: ident_str });
+                    fields.push(Field::Normal {
+                        name: ident_str,
+                        ty: field.ty.clone().into(),
+                    });
                     continue;
                 }
 
@@ -316,18 +362,36 @@ fn parse_fields(
                     ::std::vec::Vec<#elem>
                 };
 
-                fields.push(Field::Normal { name: ident_str });
+                if let Some(len_field) = fields.iter_mut().find(|v| type_segment == v.name()) {
+                    *len_field = Field::Length {
+                        name: len_field.name().to_owned(),
+                        for_field: ident_str.clone(),
+                    }
+                } else {
+                    panic!("no len for field {ident_str}");
+                };
+
+                fields.push(Field::Normal {
+                    name: ident_str,
+                    ty: field.ty.clone().into(),
+                });
                 continue;
             }
             syn::Type::Reference(type_reference) => {
                 let syn::Type::Path(path) = type_reference.elem.as_ref() else {
-                    fields.push(Field::Normal { name: ident_str });
+                    fields.push(Field::Normal {
+                        name: ident_str,
+                        ty: field.ty.clone().into(),
+                    });
                     continue;
                 };
 
                 let type_segment = {
                     if path.path.segments.len() != 1 {
-                        fields.push(Field::Normal { name: ident_str });
+                        fields.push(Field::Normal {
+                            name: ident_str,
+                            ty: field.ty.clone().into(),
+                        });
                         continue;
                     }
                     path.path.segments.first().unwrap().ident.clone()
@@ -361,7 +425,10 @@ fn parse_fields(
                 };
             }
             _ => {
-                fields.push(Field::Normal { name: ident_str });
+                fields.push(Field::Normal {
+                    name: ident_str,
+                    ty: field.ty.clone().into(),
+                });
             }
         }
     }

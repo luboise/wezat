@@ -64,6 +64,9 @@ impl<T: Wezat + Default + Copy, const C: usize> Wezat for [T; C] {
     }
 
     fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
-        todo!()
+        for item in self {
+            item.write_bytes(writer)?;
+        }
+        Ok(())
     }
 }

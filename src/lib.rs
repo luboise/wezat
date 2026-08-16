@@ -17,12 +17,6 @@ mod tests {
         bruh: u32,
     }
 
-    #[wezat::wz]
-    pub struct BasicPointerInverted {
-        bruh: u32,
-        ptr: &bruh,
-    }
-
     #[test]
     fn ptr() -> Result<(), wezat::Error> {
         let input = 4u32
@@ -66,6 +60,12 @@ mod tests {
         Ok(())
     }
 
+    #[wezat::wz]
+    pub struct BasicPointerInverted {
+        bruh: u32,
+        ptr: &bruh,
+    }
+
     #[test]
     fn ptr_inverted() -> Result<(), wezat::Error> {
         let input = 67u32
@@ -102,6 +102,40 @@ mod tests {
         let mut output = vec![];
         let mut out_cur = &mut std::io::Cursor::new(&mut output);
         out_cur.write_all(&[0u8; 4])?;
+        bp.write_bytes(&mut out_cur)?;
+
+        assert_eq!(input, output);
+
+        Ok(())
+    }
+
+    #[wezat::wz]
+    pub struct HasArrays {
+        normal_data: [u8; 8],
+        array_len: u32,
+        normal_data_2: [u32; 2],
+        array: [u16; array_len],
+    }
+
+    #[test]
+    fn has_arrays() -> Result<(), wezat::Error> {
+        let input = (*b"abcdefgh")
+            .into_iter()
+            .chain(4u32.to_le_bytes())
+            .chain([67u32, 69u32].into_iter().flat_map(|v| v.to_le_bytes()))
+            .chain(
+                [1u16, 2u16, 3u16, 4u16]
+                    .into_iter()
+                    .flat_map(|v| v.to_le_bytes()),
+            )
+            .collect::<Vec<_>>();
+
+        let mut reader = std::io::Cursor::new(&input);
+
+        let bp = HasArrays::from_bytes(&mut reader)?;
+
+        let mut output = vec![];
+        let mut out_cur = &mut std::io::Cursor::new(&mut output);
         bp.write_bytes(&mut out_cur)?;
 
         assert_eq!(input, output);
