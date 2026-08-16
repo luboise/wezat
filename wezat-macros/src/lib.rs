@@ -32,12 +32,6 @@ impl Field {
     }
 }
 
-struct WrittenField {
-    name: String,
-    offset: usize,
-    write_size: usize,
-}
-
 #[proc_macro_attribute]
 pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -120,15 +114,127 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
         quote::quote! {}
     };
 
+    let read_actions = {
+        let mut actions = vec![];
+
+        actions.push(quote::quote! {
+            let mut pointers = ::std::collections::HashMap::<String, u32>::new();
+            let _restore_pos = reader.stream_position()?;
+        });
+
+        for field in &parsed_fields {
+            let field_name = field.name();
+            let field_name_ident = quote::format_ident!("{}", field_name);
+
+            match field {
+                Field::Normal { name } => {
+                    actions.push(quote::quote! {
+                        let #field_name_ident = {
+                            // pointer is available
+                            if let Some(ptr) = pointers.get(#name).cloned() {
+                                let _restore_pos = reader.stream_position()?;
+                                reader.seek(std::io::SeekFrom::Start(ptr.into()))?;
+                                let value = Wezat::from_bytes(reader)?;
+                                reader.seek(std::io::SeekFrom::Start(_restore_pos))?;
+
+                                value
+                            }
+                            else {
+                                Wezat::from_bytes(reader)?
+                            }
+                        };
+                    });
+                }
+                Field::Pointer { name: _, to_field } => {
+                    actions.push(quote::quote! {
+                        {
+                            let ptr = wezat::Wezat::from_bytes(reader)?;
+                            pointers.insert(#to_field.to_owned(), ptr);
+                        }
+                    });
+                }
+                Field::Length {
+                    name,
+                    len,
+                    for_field,
+                } => todo!(),
+            }
+        }
+
+        actions
+    };
+
+    let write_actions = {
+        let mut actions = vec![];
+
+        actions.push(quote::quote! {
+            type PointerType = u32;
+            let mut pointers = ::std::collections::HashMap::<String, (u64, Option<String>)>::new();
+            let _base_ptr = writer.stream_position()?;
+        });
+
+        // first pass
+        for field in &parsed_fields {
+            let ident = quote::format_ident!("{}", field.name());
+
+            match field {
+                Field::Normal { name } => {
+                    actions.push(quote::quote! {
+                        pointers.insert(#name.to_owned(), (writer.stream_position()?, None));
+                        Wezat::write_bytes(&self.#ident, writer)?;
+                    });
+                }
+                Field::Pointer { name, to_field } => {
+                    // skip pointers on first pass, but note where they are
+                    actions.push(quote::quote! {
+                        pointers.insert(#name.to_owned(), (writer.stream_position()?, Some(#to_field.to_owned())));
+                        writer.seek_relative(size_of::<PointerType>() as i64)?;
+                    });
+                }
+                Field::Length {
+                    name,
+                    len,
+                    for_field,
+                } => todo!(),
+            }
+        }
+
+        actions.push(quote::quote! {
+            let _end_ptr = writer.stream_position()?;
+        });
+
+        actions.push(quote::quote! {
+            for (field, (ptr, pointing_to)) in &pointers {
+                // ignore non-pointer fields
+                let Some(pointing_to) = pointing_to else {
+                    continue;
+                };
+
+                // go to the address of the pointer and write it
+                writer.seek(::std::io::SeekFrom::Start(*ptr))?;
+
+                let (ptr, _) = pointers
+                    .get(pointing_to)
+                    .cloned()
+                    .ok_or_else(|| format!("{field}: address of field {pointing_to} not found"))?;
+                (ptr as PointerType).write_bytes(writer)?;
+            }
+        });
+
+        actions.push(quote::quote! {
+            writer.seek(::std::io::SeekFrom::Start(_end_ptr))?;
+        });
+
+        actions
+    };
+
     let quoted = quote::quote! {
         #input
         impl wezat::Wezat for #struct_name {
             const MIN_SIZE: usize = 0;
 
             fn from_bytes(reader: &mut impl wezat::Reader) -> Result<Self, wezat::Error> {
-                #(
-                    let #field_idents = wezat::Wezat::from_bytes(reader)?;
-                )*
+                #(#read_actions)*
 
                 Ok(Self {
                     #(
@@ -138,9 +244,7 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             fn write_bytes(&self, writer: &mut impl wezat::Writer) -> Result<(), wezat::Error> {
-                #(
-                    self.#field_idents.write_bytes(writer)?;
-                )*
+                #(#write_actions)*
                 Ok(())
             }
         }

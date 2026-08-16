@@ -7,39 +7,14 @@ pub fn read<T: crate::Wezat>(reader: &mut impl Reader) -> Result<T, Error> {
 
 #[cfg(test)]
 mod tests {
+    use crate as wezat;
+    use std::io::{Seek, Write};
     use wezat_core::Wezat;
 
-    use crate as wezat;
-
+    #[wezat::wz]
     pub struct BasicPointer {
+        ptr: &bruh,
         bruh: u32,
-    }
-
-    impl wezat::Wezat for BasicPointer {
-        const MIN_SIZE: usize = 0;
-
-        fn from_bytes(reader: &mut impl wezat_core::Reader) -> Result<Self, wezat_core::Error> {
-            let bruh_ptr: u32 = Wezat::from_bytes(reader)?;
-            let bruh = {
-                let restore_pos = reader.stream_position()?;
-                reader.seek(std::io::SeekFrom::Start(bruh_ptr.into()))?;
-                let value = Wezat::from_bytes(reader)?;
-                reader.seek(std::io::SeekFrom::Start(restore_pos))?;
-                value
-            };
-
-            Ok(Self { bruh })
-        }
-
-        fn write_bytes(
-            &self,
-            writer: &mut impl wezat_core::Writer,
-        ) -> Result<(), wezat_core::Error> {
-            4u32.write_bytes(writer)?;
-            self.bruh.write_bytes(writer)?;
-
-            Ok(())
-        }
     }
 
     #[test]
@@ -55,6 +30,30 @@ mod tests {
 
         let mut output = vec![];
         bp.write_bytes(&mut std::io::Cursor::new(&mut output))?;
+
+        assert_eq!(input, output);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ptr_with_4_offset() -> Result<(), wezat::Error> {
+        let input = 0u32
+            .to_le_bytes()
+            .into_iter()
+            .chain(8u32.to_le_bytes())
+            .chain(67u32.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let mut reader = std::io::Cursor::new(&input);
+        reader.seek_relative(4)?;
+
+        let bp = BasicPointer::from_bytes(&mut reader)?;
+
+        let mut output = vec![];
+        let mut out_cur = &mut std::io::Cursor::new(&mut output);
+        out_cur.write_all(&[0u8; 4])?;
+        bp.write_bytes(&mut out_cur)?;
 
         assert_eq!(input, output);
 
