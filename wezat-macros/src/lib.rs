@@ -100,6 +100,23 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     })
                 }
             }
+
+            impl ::binrw::BinWrite for #struct_name {
+                type Args<'a> = ();
+
+                fn write_options<W: ::std::io::Write + std::io::Seek>(
+                    &self,
+                    writer: &mut W,
+                    _: binrw::Endian,
+                    _: Self::Args<'_>,
+                ) -> binrw::prelude::BinResult<()> {
+                    use wezat::Wezat;
+                    Self::write_bytes(writer).map_err(|e| binrw::Error::Custom {
+                        pos: 0,
+                        err: Box::new(e.to_string()),
+                    })
+                }
+            }
         }
     } else {
         quote::quote! {}
