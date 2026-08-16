@@ -17,6 +17,12 @@ mod tests {
         bruh: u32,
     }
 
+    #[wezat::wz]
+    pub struct BasicPointerInverted {
+        bruh: u32,
+        ptr: &bruh,
+    }
+
     #[test]
     fn ptr() -> Result<(), wezat::Error> {
         let input = 4u32
@@ -49,6 +55,49 @@ mod tests {
         reader.seek_relative(4)?;
 
         let bp = BasicPointer::from_bytes(&mut reader)?;
+
+        let mut output = vec![];
+        let mut out_cur = &mut std::io::Cursor::new(&mut output);
+        out_cur.write_all(&[0u8; 4])?;
+        bp.write_bytes(&mut out_cur)?;
+
+        assert_eq!(input, output);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ptr_inverted() -> Result<(), wezat::Error> {
+        let input = 67u32
+            .to_le_bytes()
+            .into_iter()
+            .chain(0u32.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let mut reader = std::io::Cursor::new(&input);
+        let bp = BasicPointerInverted::from_bytes(&mut reader)?;
+
+        let mut output = vec![];
+        bp.write_bytes(&mut std::io::Cursor::new(&mut output))?;
+
+        assert_eq!(input, output);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ptr_with_4_offset_inverted() -> Result<(), wezat::Error> {
+        let input = 0u32
+            .to_le_bytes()
+            .into_iter()
+            .chain(67u32.to_le_bytes())
+            .chain(4u32.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let mut reader = std::io::Cursor::new(&input);
+        reader.seek_relative(4)?;
+
+        let bp = BasicPointerInverted::from_bytes(&mut reader)?;
 
         let mut output = vec![];
         let mut out_cur = &mut std::io::Cursor::new(&mut output);

@@ -349,10 +349,10 @@ fn parse_fields(
                         to_field: field.clone(),
                     });
 
-                    dependencies.push(Dependency {
-                        field,
-                        depends_on: ident_str,
-                    });
+                    // dependencies.push(Dependency {
+                    //     field,
+                    //     depends_on: ident_str,
+                    // });
                 }
 
                 let elem = &type_reference.elem;
