@@ -226,12 +226,12 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     if type_is_vec(ty) {
                         actions.push(quote::quote! {
                             for item in &self.#ident {
-                                Wezat::write_bytes(item, writer)?;
+                                item.write_bytes(item, writer)?;
                             }
                         });
                     } else {
                         actions.push(quote::quote! {
-                            Wezat::write_bytes(&self.#ident, writer)?;
+                            self.#ident.write_bytes(writer)?;
                         });
                     }
                 }
@@ -249,7 +249,7 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                         {
                             pointers.insert(#name.to_owned(), (writer.stream_position()?, None));
                             let len = self.#for_ident.len() as PointerType;
-                            Wezat::write_bytes(&len, writer)?;
+                            len.write_bytes(writer)?;
                         }
                     });
                 }
