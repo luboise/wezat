@@ -226,7 +226,7 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                     if type_is_vec(ty) {
                         actions.push(quote::quote! {
                             for item in &self.#ident {
-                                item.write_bytes(item, writer)?;
+                                item.write_bytes(writer)?;
                             }
                         });
                     } else {
@@ -288,9 +288,11 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let quoted = quote::quote! {
         #input
         impl wezat::Wezat for #struct_name {
-            const MIN_SIZE: usize = 0;
-
-            fn from_bytes(reader: &mut impl wezat::Reader) -> Result<Self, wezat::Error> {
+            type ReadArgs = ();
+            fn from_bytes_with_args(
+                reader: &mut impl wezat::Reader,
+                _: &Self::ReadArgs
+            ) -> Result<Self, wezat::Error> {
                 #(#read_actions)*
 
                 Ok(Self {
@@ -300,7 +302,12 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 })
             }
 
-            fn write_bytes(&self, writer: &mut impl wezat::Writer) -> Result<(), wezat::Error> {
+            type WriteArgs = ();
+            fn write_bytes_with_args(
+                &self,
+                writer: &mut impl wezat::Writer,
+                _: &Self::WriteArgs
+            ) -> Result<(), wezat::Error> {
                 #(#write_actions)*
                 Ok(())
             }
@@ -361,9 +368,9 @@ fn parse_fields(
                     .iter()
                     .any(|original_ident| original_ident == type_segment);
 
-                // if it's not a known field in the struct, ignore it
+                // if it's not a known field in the struct, panic
                 if !struct_is_using_variable_name {
-                    panic!("struct not using {type_segment}");
+                    panic!("field {ident_str} references unknown value {type_segment}");
                 }
 
                 {
