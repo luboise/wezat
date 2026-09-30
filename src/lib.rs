@@ -5,6 +5,14 @@ pub fn read<T: crate::Wezat>(reader: &mut impl Reader) -> Result<T, Error> {
     T::from_bytes(reader)
 }
 
+/// Serialise a wezat value into a Vec of bytes, assuming offset zero
+pub fn to_vec<T: crate::Wezat>(value: impl std::borrow::Borrow<T>) -> Result<Vec<u8>, Error> {
+    let mut writer = std::io::Cursor::new(vec![]);
+    value.borrow().write_bytes(&mut writer)?;
+
+    Ok(writer.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use crate as wezat;
@@ -139,6 +147,19 @@ mod tests {
         bp.write_bytes(&mut out_cur)?;
 
         assert_eq!(input, output);
+
+        Ok(())
+    }
+
+    #[test]
+    fn terminated_string_test() -> Result<(), crate::Error> {
+        let input = b"abcde\x00";
+
+        let terminated = wezat::NullTerminatedString::try_from(input)?;
+        assert_eq!(terminated.0.len(), 5, "bad terminated len");
+
+        let v = wezat::to_vec(terminated)?;
+        assert_eq!(v, input);
 
         Ok(())
     }

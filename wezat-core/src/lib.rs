@@ -1,6 +1,9 @@
 // TODO: Replace this with an actual error type
 pub type Error = Box<dyn std::error::Error>;
 
+mod types;
+pub use types::*;
+
 pub trait Reader: std::io::Seek + std::io::Read {}
 impl<T> Reader for T where T: std::io::Seek + std::io::Read {}
 
@@ -67,6 +70,35 @@ impl<T: Wezat + Default + Copy, const C: usize> Wezat for [T; C] {
         for item in self {
             item.write_bytes(writer)?;
         }
+        Ok(())
+    }
+}
+
+impl<const C: char> Wezat for TerminatedString<C> {
+    const MIN_SIZE: usize = 0;
+
+    fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error> {
+        // TODO: make it read directly from the reader?
+        let c_as_u8 = C as u8;
+
+        let mut bytes = vec![];
+
+        loop {
+            let new_byte = u8::from_bytes(reader)?;
+            bytes.push(new_byte);
+
+            if new_byte == c_as_u8 {
+                break;
+            }
+        }
+
+        Self::try_from(bytes.as_slice())
+    }
+
+    fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
+        writer.write_all(self.0.as_bytes())?;
+        (C as u8).write_bytes(writer)?;
+
         Ok(())
     }
 }
