@@ -204,3 +204,41 @@ impl<const C: char> Wezat for TerminatedString<C> {
         Ok(())
     }
 }
+
+impl Wezat for () {
+    const MIN_SIZE: usize = 0;
+
+    type ReadArgs = ();
+    type WriteArgs = ();
+
+    fn from_bytes_ctx(_: &ReadContext<Self::ReadArgs>, _: &mut impl Reader) -> Result<Self, Error> {
+        Ok(())
+    }
+
+    fn write_bytes_ctx(
+        &self,
+        _: &WriteContext<Self::WriteArgs>,
+        _: &mut impl Writer,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl Wezat for Option<()> {
+    const MIN_SIZE: usize = 0;
+
+    type ReadArgs = ();
+    type WriteArgs = ();
+
+    fn from_bytes_ctx(_: &ReadContext<Self::ReadArgs>, _: &mut impl Reader) -> Result<Self, Error> {
+        Ok(Some(()))
+    }
+
+    fn write_bytes_ctx(
+        &self,
+        _: &WriteContext<Self::WriteArgs>,
+        _: &mut impl Writer,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
