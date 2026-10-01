@@ -289,8 +289,9 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
         #input
         impl wezat::Wezat for #struct_name {
             const MIN_SIZE: usize = 0;
+            type ReadArgs = ();
 
-            fn from_bytes(reader: &mut impl wezat::Reader) -> Result<Self, wezat::Error> {
+            fn from_bytes_ctx(_: &wezat::ReadContext<()>, reader: &mut impl wezat::Reader) -> Result<Self, wezat::Error> {
                 #(#read_actions)*
 
                 Ok(Self {
@@ -300,7 +301,8 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                 })
             }
 
-            fn write_bytes(&self, writer: &mut impl wezat::Writer) -> Result<(), wezat::Error> {
+            type WriteArgs = ();
+            fn write_bytes_ctx(&self, _: &wezat::WriteContext<()>, writer: &mut impl wezat::Writer) -> Result<(), wezat::Error> {
                 #(#write_actions)*
                 Ok(())
             }

@@ -15,12 +15,84 @@ impl<T> Writer for T where T: std::io::Seek + std::io::Write {}
 pub trait Wezat: Sized {
     const MIN_SIZE: usize;
 
+    type ReadArgs;
+    type WriteArgs;
+
     /// calculates the size of the value serialised
     fn size(&self) -> usize {
         Self::MIN_SIZE
     }
-    fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error>;
-    fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error>;
+
+    fn from_bytes_ctx(
+        ctx: &ReadContext<Self::ReadArgs>,
+        reader: &mut impl Reader,
+    ) -> Result<Self, Error>;
+
+    fn write_bytes_ctx(
+        &self,
+        ctx: &WriteContext<Self::WriteArgs>,
+        writer: &mut impl Writer,
+    ) -> Result<(), Error>;
+
+    // convenience methods for trait implementations
+    fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error>
+    where
+        Self: Wezat<ReadArgs = ()>,
+    {
+        Self::from_bytes_ctx(&ReadContext::default(), reader)
+    }
+
+    fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error>
+    where
+        Self: Wezat<WriteArgs = ()>,
+    {
+        self.write_bytes_ctx(&WriteContext::default(), writer)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct GlobalReadContextInner;
+
+impl<T: Default> Default for ReadContext<T> {
+    fn default() -> Self {
+        Self {
+            args: Default::default(),
+            global: Default::default(),
+        }
+    }
+}
+
+impl<T: Clone> Clone for ReadContext<T> {
+    fn clone(&self) -> Self {
+        Self {
+            args: self.args.clone(),
+            global: self.global.clone(),
+        }
+    }
+}
+
+pub struct ReadContext<T> {
+    /// direct context used by the current operation
+    pub args: T,
+    pub global: std::cell::RefCell<GlobalReadContextInner>,
+}
+
+#[derive(Default)]
+pub struct GlobalWriteContext;
+
+pub struct WriteContext<T> {
+    /// direct context used by the current operation
+    pub args: T,
+    pub global: GlobalWriteContext,
+}
+
+impl<T: Default> Default for WriteContext<T> {
+    fn default() -> Self {
+        Self {
+            args: Default::default(),
+            global: Default::default(),
+        }
+    }
 }
 
 macro_rules! impl_wezat_primitive {
@@ -28,13 +100,23 @@ macro_rules! impl_wezat_primitive {
         impl Wezat for $t {
             const MIN_SIZE: usize = size_of::<$t>();
 
-            fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error> {
+            type ReadArgs = ();
+            type WriteArgs = ();
+
+            fn from_bytes_ctx(
+                _: &ReadContext<()>,
+                reader: &mut impl Reader,
+            ) -> Result<Self, Error> {
                 let mut bytes = [0u8; Self::MIN_SIZE];
                 reader.read_exact(&mut bytes)?;
                 Ok(Self::from_le_bytes(bytes))
             }
 
-            fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
+            fn write_bytes_ctx(
+                &self,
+                _: &WriteContext<()>,
+                writer: &mut impl Writer,
+            ) -> Result<(), Error> {
                 writer.write_all(&self.to_le_bytes())?;
                 Ok(())
             }
@@ -56,19 +138,29 @@ impl_wezat_primitive!(f64);
 impl<T: Wezat + Default + Copy, const C: usize> Wezat for [T; C] {
     const MIN_SIZE: usize = T::MIN_SIZE * C;
 
-    fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error> {
+    type ReadArgs = T::ReadArgs;
+    type WriteArgs = T::WriteArgs;
+
+    fn from_bytes_ctx(
+        ctx: &ReadContext<Self::ReadArgs>,
+        reader: &mut impl Reader,
+    ) -> Result<Self, Error> {
         let mut ret = [T::default(); C];
 
         for elem in ret.iter_mut().take(C) {
-            *elem = T::from_bytes(reader)?;
+            *elem = T::from_bytes_ctx(ctx, reader)?;
         }
 
         Ok(ret)
     }
 
-    fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
+    fn write_bytes_ctx(
+        &self,
+        ctx: &WriteContext<Self::WriteArgs>,
+        writer: &mut impl Writer,
+    ) -> Result<(), Error> {
         for item in self {
-            item.write_bytes(writer)?;
+            item.write_bytes_ctx(ctx, writer)?;
         }
         Ok(())
     }
@@ -77,7 +169,13 @@ impl<T: Wezat + Default + Copy, const C: usize> Wezat for [T; C] {
 impl<const C: char> Wezat for TerminatedString<C> {
     const MIN_SIZE: usize = 0;
 
-    fn from_bytes(reader: &mut impl Reader) -> Result<Self, Error> {
+    type ReadArgs = ();
+    type WriteArgs = ();
+
+    fn from_bytes_ctx(
+        _: &ReadContext<Self::ReadArgs>,
+        reader: &mut impl Reader,
+    ) -> Result<Self, Error> {
         // TODO: make it read directly from the reader?
         let c_as_u8 = C as u8;
 
@@ -95,7 +193,11 @@ impl<const C: char> Wezat for TerminatedString<C> {
         Self::try_from(bytes.as_slice())
     }
 
-    fn write_bytes(&self, writer: &mut impl Writer) -> Result<(), Error> {
+    fn write_bytes_ctx(
+        &self,
+        _: &WriteContext<Self::WriteArgs>,
+        writer: &mut impl Writer,
+    ) -> Result<(), Error> {
         writer.write_all(self.0.as_bytes())?;
         (C as u8).write_bytes(writer)?;
 

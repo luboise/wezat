@@ -1,12 +1,14 @@
 pub use wezat_core::*;
 pub use wezat_macros::wz;
 
-pub fn read<T: crate::Wezat>(reader: &mut impl Reader) -> Result<T, Error> {
+pub fn read<T: crate::Wezat<ReadArgs = ()>>(reader: &mut impl Reader) -> Result<T, Error> {
     T::from_bytes(reader)
 }
 
 /// Serialise a wezat value into a Vec of bytes, assuming offset zero
-pub fn to_vec<T: crate::Wezat>(value: impl std::borrow::Borrow<T>) -> Result<Vec<u8>, Error> {
+pub fn to_vec<T: crate::Wezat<WriteArgs = ()>>(
+    value: impl std::borrow::Borrow<T>,
+) -> Result<Vec<u8>, Error> {
     let mut writer = std::io::Cursor::new(vec![]);
     value.borrow().write_bytes(&mut writer)?;
 

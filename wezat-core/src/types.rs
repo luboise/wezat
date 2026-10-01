@@ -56,3 +56,5 @@ impl<const C: char, const L: usize> TryFrom<&[u8; L]> for TerminatedString<C> {
         Ok(Self(s))
     }
 }
+
+pub struct OffsetTable {}
