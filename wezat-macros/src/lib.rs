@@ -8,9 +8,19 @@ struct Dependency {
 
 #[derive(Debug)]
 enum Field {
-    Normal { name: String, ty: Box<syn::Type> },
-    Pointer { name: String, to_field: String },
-    Length { name: String, for_field: String },
+    Normal {
+        name: String,
+        ty: Box<syn::Type>,
+    },
+    Pointer {
+        name: String,
+        size: syn::Path,
+        to_field: String,
+    },
+    Length {
+        name: String,
+        for_field: String,
+    },
 }
 
 impl Field {
@@ -180,10 +190,14 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
                     actions.push(action);
                 }
-                Field::Pointer { name: _, to_field } => {
+                Field::Pointer {
+                    name: _,
+                    size,
+                    to_field,
+                } => {
                     actions.push(quote::quote! {
                         {
-                            let ptr = wezat::Wezat::from_bytes(reader)?;
+                            let ptr: #size = wezat::Wezat::from_bytes(reader)?;
                             pointers.insert(#to_field.to_owned(), ptr);
                         }
                     });
@@ -235,7 +249,11 @@ pub fn wz(_attr: TokenStream, input: TokenStream) -> TokenStream {
                         });
                     }
                 }
-                Field::Pointer { name, to_field } => {
+                Field::Pointer {
+                    name,
+                    size: _,
+                    to_field,
+                } => {
                     // skip pointers on first pass, but note where they are
                     actions.push(quote::quote! {
                         pointers.insert(#name.to_owned(), (writer.stream_position()?, Some(#to_field.to_owned())));
@@ -321,7 +339,7 @@ fn parse_fields(
         panic!("expected named fields")
     };
 
-    let mut fields = vec![];
+    let mut retained_fields = vec![];
     let mut dependencies = vec![];
 
     let syn_idents = syn_fields
@@ -335,11 +353,13 @@ fn parse_fields(
             continue;
         };
 
+        let field_ty = field.ty.clone();
+
         match &mut field.ty {
             syn::Type::Array(array) => {
                 // make sure len is a path
                 let syn::Expr::Path(expr_path) = array.len.clone() else {
-                    fields.push(Field::Normal {
+                    retained_fields.push(Field::Normal {
                         name: ident_str,
                         ty: field.ty.clone().into(),
                     });
@@ -350,7 +370,7 @@ fn parse_fields(
 
                 // more than one segment => not a field name
                 if segments.len() != 1 {
-                    fields.push(Field::Normal {
+                    retained_fields.push(Field::Normal {
                         name: ident_str,
                         ty: field.ty.clone().into(),
                     });
@@ -381,7 +401,10 @@ fn parse_fields(
                     ::std::vec::Vec<#elem>
                 };
 
-                if let Some(len_field) = fields.iter_mut().find(|v| type_segment == v.name()) {
+                if let Some(len_field) = retained_fields
+                    .iter_mut()
+                    .find(|v| type_segment == v.name())
+                {
                     *len_field = Field::Length {
                         name: len_field.name().to_owned(),
                         for_field: ident_str.clone(),
@@ -390,30 +413,30 @@ fn parse_fields(
                     panic!("no len for field {ident_str}");
                 };
 
-                fields.push(Field::Normal {
+                retained_fields.push(Field::Normal {
                     name: ident_str,
                     ty: field.ty.clone().into(),
                 });
                 continue;
             }
-            syn::Type::Reference(type_reference) => {
-                let syn::Type::Path(path) = type_reference.elem.as_ref() else {
-                    fields.push(Field::Normal {
-                        name: ident_str,
-                        ty: field.ty.clone().into(),
-                    });
-                    continue;
+            syn::Type::Ptr(ptr_reference) => {
+                let Some((_eq, expr)) = &field.default else {
+                    return Err(format!("no default on field {ident_str}").into());
+                };
+
+                let syn::Expr::Reference(r) = expr else {
+                    panic!("expected reference for field {ident_str}");
+                };
+
+                let syn::Expr::Path(ptr_type_path) = r.expr.as_ref() else {
+                    panic!("no path for field {ident_str}");
                 };
 
                 let type_segment = {
-                    if path.path.segments.len() != 1 {
-                        fields.push(Field::Normal {
-                            name: ident_str,
-                            ty: field.ty.clone().into(),
-                        });
-                        continue;
+                    if ptr_type_path.path.segments.len() != 1 {
+                        panic!("expected path of length 1");
                     }
-                    path.path.segments.first().unwrap().ident.clone()
+                    ptr_type_path.path.segments.first().unwrap().ident.clone()
                 };
 
                 let struct_is_using_variable_name =
@@ -425,11 +448,23 @@ fn parse_fields(
                 }
 
                 {
-                    let field = type_segment.to_string();
+                    let field_str = type_segment.to_string();
 
-                    fields.push(Field::Pointer {
+                    let syn::Type::Ptr(type_ptr) = &field_ty else {
+                        panic!("field {ident_str} is not a pointer");
+                    };
+
+                    let v = if let syn::Type::Path(v) = type_ptr.elem.as_ref() {
+                        v
+                    } else {
+                        // default pointer type is u32
+                        &syn::parse_quote!(u32)
+                    };
+
+                    retained_fields.push(Field::Pointer {
                         name: ident_str.clone(),
-                        to_field: field.clone(),
+                        size: v.path.clone(),
+                        to_field: field_str.clone(),
                     });
 
                     // dependencies.push(Dependency {
@@ -438,13 +473,13 @@ fn parse_fields(
                     // });
                 }
 
-                let elem = &type_reference.elem;
+                let elem = &ptr_reference.elem;
                 field.ty = syn::parse_quote! {
                     ::std::vec::Vec<#elem>
                 };
             }
             _ => {
-                fields.push(Field::Normal {
+                retained_fields.push(Field::Normal {
                     name: ident_str,
                     ty: field.ty.clone().into(),
                 });
@@ -452,5 +487,5 @@ fn parse_fields(
         }
     }
 
-    Ok((fields, dependencies))
+    Ok((retained_fields, dependencies))
 }

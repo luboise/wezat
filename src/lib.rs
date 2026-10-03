@@ -1,3 +1,5 @@
+#![feature(default_field_values)]
+
 pub use wezat_core::*;
 pub use wezat_macros::wz;
 
@@ -23,8 +25,15 @@ mod tests {
 
     #[wezat::wz]
     pub struct BasicPointer {
-        ptr: &bruh,
+        ptr: *const u32 = &bruh,
         bruh: u32,
+    }
+
+    // inverted and also uses default pointer type of u32
+    #[wezat::wz]
+    pub struct BasicPointerInverted {
+        bruh: u32,
+        ptr: *const _ = &bruh,
     }
 
     #[test]
@@ -68,12 +77,6 @@ mod tests {
         assert_eq!(input, output);
 
         Ok(())
-    }
-
-    #[wezat::wz]
-    pub struct BasicPointerInverted {
-        bruh: u32,
-        ptr: &bruh,
     }
 
     #[test]
